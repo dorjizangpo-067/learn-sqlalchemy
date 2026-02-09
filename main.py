@@ -2,7 +2,14 @@ import uuid
 from typing import Any, Sequence
 
 from sqlalchemy import ForeignKey, Integer, String, create_engine, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    mapped_column,
+    relationship,
+    sessionmaker,
+)
 
 
 class Base(DeclarativeBase):
@@ -37,8 +44,13 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(32), unique=True)
     profile_name: Mapped[str] = mapped_column(String(32))
 
-    def __init__(self, **kw: Any) -> None:  # noqa: ANN401
-        super().__init__(**kw)
+    # Relationship
+    post: Mapped[list["Post"]] = relationship(
+        back_populates="author", cascade="all, delete-orphan"
+    )
+    likes: Mapped[list["Like"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Post(Base):
@@ -50,8 +62,11 @@ class Post(Base):
     user_id: Mapped[str] = mapped_column(String(32), ForeignKey("users.userId"))
     content: Mapped[str] = mapped_column(String(32))
 
-    def __init__(self, **kw: Any) -> None:  # noqa: ANN401
-        super().__init__(**kw)
+    # Relationship
+    author: Mapped["User"] = relationship(back_populates="post")
+    likes: Mapped[list["Like"]] = relationship(
+        back_populates="post", cascade="all, delete-orphan"
+    )
 
 
 class Like(Base):
@@ -63,8 +78,9 @@ class Like(Base):
     post_id: Mapped[str] = mapped_column(String(36), ForeignKey("posts.postId"))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.userId"))
 
-    def __init__(self, **kw: Any) -> None:  # noqa: ANN401
-        super().__init__(**kw)
+    # Relationship
+    user: Mapped["User"] = relationship(back_populates="likes")
+    post: Mapped["Post"] = relationship(back_populates="likes")
 
 
 # creating User
@@ -94,16 +110,17 @@ def add_user(
 
 
 # creating post
-def add_post(session: Session, user_id: str, content: str) -> None:
-    post = Post(user_id=user_id, content=content)
+def add_post(session: Session, user: User, content: str) -> Post:
+    post = Post(author=user, content=content)
     session.add(post)
     session.commit()
     session.refresh(post)
+    return post
 
 
 # creating likes
-def add_like(session: Session, user_id: str, post_id: str) -> None:
-    new_like = Like(post_id=post_id, user_id=user_id)
+def add_like(session: Session, user: User, post: Post) -> None:
+    new_like = Like(user=user, post=post)
     session.add(new_like)
     session.commit()
     session.refresh(new_like)
@@ -122,12 +139,14 @@ def get_post_with_user_id(session: Session, user_id: str) -> Sequence[Post]:
     return session.scalars(select(Post).filter(Post.user_id == user_id)).all()
 
 
-def get_user_like_post(session: Session, post_id: str) -> Sequence:
-    return session.scalars(
-        select(User, Like)
-        .filter(Like.post_id == post_id)
-        .filter(User.userId == Like.user_id)
-    ).all()
+def get_user_like_post(session: Session, post_id: str) -> Sequence | None:
+    # return session.scalars(
+    #     select(User).join(Like).filter(Like.post_id == post_id)  # noqa: ERA001
+    # ).all()
+    post = session.get(Post, post_id)
+    if post is None:
+        return []
+    return [like.user for like in post.likes]
 
 
 # Test Datas
@@ -204,105 +223,6 @@ def test_data_add_user() -> None:
     )
 
 
-def test_data_add_post() -> None:
-    add_post(
-        session=session,
-        user_id="b98e5a6d-18ae-43ad-a37c-4f48ad8869df",
-        content="Kuzuzangpo la!",
-    )
-    add_post(
-        session=session,
-        user_id="c0eb7b89-9756-4aa4-a357-d4bebf529bdf",
-        content="Morning in Thimphu",
-    )
-    add_post(
-        session=session,
-        user_id="d4026a9d-34d1-4630-9e78-d79e0bfc7669",
-        content="Ema Datshi time",
-    )
-    add_post(
-        session=session,
-        user_id="16827944-486d-4027-94ea-f9b6c7d7edc3",
-        content="Heading to Paro",
-    )
-    add_post(
-        session=session,
-        user_id="7b55ccff-35f7-4b9a-a2cc-7e4cebf25ffd",
-        content="Bhutan is beautiful",
-    )
-
-
-def test_data_add_like() -> None:
-    # Pema likes their own "Kuzuzangpo la!" post
-    add_like(
-        session=session,
-        user_id="b98e5a6d-18ae-43ad-a37c-4f48ad8869df",
-        post_id="9f8f6e15-46eb-4783-9e90-1d2ad203e48d",
-    )
-
-    # Jigdrel likes Pema's greeting
-    add_like(
-        session=session,
-        user_id="c0eb7b89-9756-4aa4-a357-d4bebf529bdf",
-        post_id="9f8f6e15-46eb-4783-9e90-1d2ad203e48d",
-    )
-
-    # Karma likes Jigdrel's "Morning in Thimphu"
-    add_like(
-        session=session,
-        user_id="7b55ccff-35f7-4b9a-a2cc-7e4cebf25ffd",
-        post_id="ef8d5aa7-fb36-4938-9606-83d6ede5d99f",
-    )
-
-    # Sonam likes the "Ema Datshi time" post
-    add_like(
-        session=session,
-        user_id="16827944-486d-4027-94ea-f9b6c7d7edc3",
-        post_id="39050ed2-c682-423b-8653-5115c635d86d",
-    )
-
-    # Dechen likes Karma's "Bhutan is beautiful" post
-    add_like(
-        session=session,
-        user_id="25561b0d-1bc9-4cab-af84-2720ac05b0d7",
-        post_id="695aff27-b529-475d-8403-34f0b61c5836",
-    )
-
-    # Dorji likes Sonam's "Heading to Paro" post
-    add_like(
-        session=session,
-        user_id="1a3ced7e-cba2-4e6e-a93f-18a0045713c8",
-        post_id="95a8b732-7bca-4c53-941e-6e6546ddc27b",
-    )
-
-    # Ugyen likes the "GNH Country" post
-    add_like(
-        session=session,
-        user_id="7ddd121b-ddef-4cfa-b73b-dc4ca9c39858",
-        post_id="bdad3cd5-6ab2-4588-8737-2bc05661836b",
-    )
-    # Tenzin likes Pema's post "Ema Datshi time"
-    add_like(
-        session=session,
-        user_id="18b53de2-4888-4c3c-9421-f578b754fd57",
-        post_id="39050ed2-c682-423b-8653-5115c635d86d",
-    )
-
-    # Sangay likes Sonam's post "Hello, Paro"
-    add_like(
-        session=session,
-        user_id="2330a0a5-75b0-4f00-8a79-63dba67afe02",
-        post_id="4588698d-b7c5-44a7-bb4a-718fc6a08a00",
-    )
-
-    # Pema (the other Pema) likes Karma's post "Its GNH Country"
-    add_like(
-        session=session,
-        user_id="d4026a9d-34d1-4630-9e78-d79e0bfc7669",
-        post_id="bdad3cd5-6ab2-4588-8737-2bc05661836b",
-    )
-
-
 # showing Output
 def display_all_posts() -> None:
     print("All Posts")
@@ -335,7 +255,9 @@ def display_users_post(user_id: str) -> None:
 
 
 def display_user_like_post(post_id: str) -> None:
-    users = get_user_like_post(session=session, post_id=post_id)
+    users: Sequence | None = get_user_like_post(session=session, post_id=post_id)
+    if users is None:
+        return
     print(f"Post ID: {post_id}, Total Likes:{len(users)}\nThey are: ")
     for user in users:
         print(f"Name: {user.first_name} {user.last_name} \t email: {user.email}")
@@ -354,4 +276,26 @@ SessionLocal = sessionmaker(bind=engine)
 
 # code goes here with satement
 with SessionLocal() as session:
-    display_user_like_post(post_id="95a8b732-7bca-4c53-941e-6e6546ddc27b")
+    # pema = User(
+    #     first_name="Pema1",
+    #     last_name="Dendup",
+    #     email="pema1231@gmail.com",
+    #     profile_name="Pema",
+    # )
+    # dorji = User(
+    #     first_name="Dorji1",
+    #     last_name="Zangpo",
+    #     email="dorji1231@gmail.com",
+    #     profile_name="Alpha",
+    # )
+    # session.add_all([pema, dorji])
+    # session.commit()
+    # session.refresh(pema)
+    # session.refresh(dorji)
+
+    # p_post = add_post(session=session, user=pema, content="Happy Jurmey")
+    # d_post = add_post(session=session, user=dorji, content="Happy Jurmey")
+
+    # p_liked_d = add_like(session=session, user=pema, post=d_post)
+    # d_liked_p = add_like(session=session, user=dorji, post=p_post)
+    display_user_like_post("2b03dea3-eadc-4a81-9474-48bf15a9cdd8")
